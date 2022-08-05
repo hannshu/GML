@@ -37,6 +37,8 @@ PPI数据集共24张图，每张图对应不同的人体组织，平均每张图
 ## shallow embedding:
 
 ### deepwalk
+[源码](shallow/deepwalk.py) [论文](http://doi.acm.org/10.1145/2623330.2623732)  
+
 
 
 ### node2vec
