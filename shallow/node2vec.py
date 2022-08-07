@@ -200,7 +200,7 @@ if __name__ == '__main__':
     parser.add_argument('--workers', type=int, default=4, help='Use these many worker threads to train the model. (word2vec)')
     parser.add_argument('--learning_rate', type=float, default=1e-2, help='The initial learning rate. (word2vec)')
     parser.add_argument('--min_learning_rate', type=float, default=1e-3, help='Learning rate will linearly drop to "learning_rate" as training progresses. (word2vec)')
-    parser.add_argument('--word2vec_epochs', type=int, default=1, help='Number of epochs over the corpus. (word2vec)')
+    parser.add_argument('--word2vec_epochs', type=int, default=10, help='Number of epochs over the corpus. (word2vec)')
     parser.add_argument('--negative_samples', type=int, default=10, help='How many "noise words" should be drawn. (word2vec)')
     parser.add_argument('--classifi_epochs', type=int, default=100, help='Number of epochs over the corpus. (classification)')
     parser.add_argument('--validation_num', type=float, default=0.2, help='Ratio of validation set. (classification)')
@@ -219,6 +219,7 @@ if __name__ == '__main__':
     print('>>> randomWalk: generate random walk success! ({:.2f}s)'.format(walkTime - dataTime))
     
     if (args.word2vec_model == 'self-build'):
+        print('>>> using self-build word2vec model!')
         skipgram = skipGram(len(data), args.embedding_vector_size)
         skipgram = skipgram.to(device)
         word2vecLossFunc = LossFunc()
@@ -251,6 +252,7 @@ if __name__ == '__main__':
         for word in data:
             data[word].embeddingVector = skipgram.getEmbeddingVector(data[word].onehot)
     else:  
+        print('>>> Using gensim.word2vec model!')
         model = Word2Vec(
             sentences=walks,
             vector_size=args.embedding_vector_size,
@@ -296,29 +298,28 @@ if __name__ == '__main__':
             curLoss += loss
         # writer.add_scalar('classification train', curLoss / len(train), epoch)
         
-        if (epoch % 30 == 0):
-            classification.eval()
-            cur = 0
-            with torch.no_grad():
-                valiLoss = 0.0
-                for word in validate:
-                    input = data[word].embeddingVector
-                    target = data[word].labelOnehot
-                    tar = data[word].label
-                    output = classification(input)
-                    loss = classifiLossFunc(output, target)
-                    if (output.argmax() == tar):
-                        cur += 1
-                    valiLoss += loss
-                valiLoss /= len(validate)
-                lossChange = lastValiLoss - valiLoss
-                if (args.early_stop and abs(lossChange) < args.min_val_loss):
-                    classifiEndTime = time.time()
-                    print('>>> classification validation: early stop, loss={:.5f}! ({:.2f}s)'.format(valiLoss, classifiEndTime - classifiStartTime))
-                    break
-                lastValiLoss = valiLoss
-            acc = cur / len(validate)
-            # writer.add_scalar('classification validation', acc, epoch / 30)
+        classification.eval()
+        cur = 0
+        with torch.no_grad():
+            valiLoss = 0.0
+            for word in validate:
+                input = data[word].embeddingVector
+                target = data[word].labelOnehot
+                tar = data[word].label
+                output = classification(input)
+                loss = classifiLossFunc(output, target)
+                if (output.argmax() == tar):
+                    cur += 1
+                valiLoss += loss
+            valiLoss /= len(validate)
+            lossChange = lastValiLoss - valiLoss
+            if (args.early_stop and abs(lossChange) < args.min_val_loss):
+                classifiEndTime = time.time()
+                print('>>> classification validation: early stop, loss={:.5f}! ({:.2f}s)'.format(valiLoss, classifiEndTime - classifiStartTime))
+                break
+            lastValiLoss = valiLoss
+        acc = cur / len(validate)
+        # writer.add_scalar('classification validation', acc, epoch / 30)
     classifiEndTime = time.time()
     print('>>> classification train: classification model trained success! loss={:.5f}. ({:.2f}s)'.format(curLoss / len(train), classifiEndTime - classifiStartTime))
     
@@ -334,7 +335,7 @@ if __name__ == '__main__':
                 cur += 1
     acc = cur / len(data)
     testEndTime = time.time()
-    print('>>> test: acc = {:.2f}. ({:.2f}s)'.format(acc, testEndTime - testStartTime))        
+    print('>>> test: acc = {:.3f}. ({:.2f}s)'.format(acc, testEndTime - testStartTime))        
         
     # torch.save(classification, args.classification_save_path)
     # array = {}
