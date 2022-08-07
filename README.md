@@ -39,24 +39,26 @@ PPI数据集共24张图，每张图对应不同的人体组织，平均每张图
 
 ### deepwalk
 [源码](shallow/deepwalk.py) [论文](http://doi.acm.org/10.1145/2623330.2623732)  
-Deepwalk是一种将随机游走和skip-gram两种方法相结合的图结构数据挖掘算法。  
-- 随机游走
+Deepwalk是一种将随机游走和skip-gram两种方法相结合的图结构数据挖掘算法。   
+
+- 随机游走  
 对于图中的每个节点，对节点进行随机游走，生成节点序列，用来给下面的skip-gram模型进行训练。  
 
-- skip-gram
+- skip-gram  
 [skip-gram参考资料](https://arxiv.org/abs/1411.2738v4)  
 
 ### node2vec
 [源码](shallow/node2vec.py) [论文](https://dl.acm.org/doi/10.1145/2939672.2939754)  
 与deepwalk类似，node2vec同样采用skip-gram模型进行embedding的训练
-但不同的是，node2vec采用negative sampling的方式来优化模型。
-- 随机游走
+但不同的是，node2vec采用negative sampling的方式来优化模型。  
+
+- 随机游走  
 这里的随机游走加入了两个超参数p和q来控制向前探索的趋势。  
 返回概率p: p比较大的时候，更倾向于向更远的地方进行游走。    
 出入概率q: q比较大的时候，更倾向于在**起点的邻居结点**之间游走。  
 
-- alias sampling
-node2vec采用别名采样的方法，把一个结点的按概率的随机采样转化为一个均匀采样和一个01采样。
+- alias sampling  
+node2vec采用别名采样的方法，把一个结点的按概率的随机采样转化为一个均匀采样和一个01采样。  
 [详细解释](https://zhuanlan.zhihu.com/p/111885669)  
 
 ### LINE
