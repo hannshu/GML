@@ -92,10 +92,10 @@ def randomWalk(dataset, steps, times):
 
 class treeNode():
     
-    def __init__(self, lchild=None, rchild=None, embeddingSize=128, name=None) -> None:
+    def __init__(self, lchild=None, rchild=None, embeddingSize=128, name=None, device='cuda') -> None:
         self.vector = torch.randn(
             embeddingSize, 
-            device='cuda' if torch.cuda.is_available() else 'cpu'
+            device=device
         )
         self.lchild = lchild
         self.rchild = rchild
@@ -104,25 +104,25 @@ class treeNode():
 
 class skipGram(nn.Module):
     
-    def __init__(self, wordFreq, freqNum, nodeNum, embeddingSize) -> None:
+    def __init__(self, wordFreq, freqNum, nodeNum, embeddingSize, device) -> None:
         super().__init__()
 
         # skip-gram
         self.embeddingSpace = nn.Linear(nodeNum, embeddingSize)
         
         # hierarchical softMax
-        self.path = self.buildTree(wordFreq, freqNum)
+        self.path = self.buildTree(wordFreq, freqNum, device)
         
     def getEmbeddingVector(self, x):
         x = self.embeddingSpace(x)
         return x
         
-    def buildTree(self, wordFreq, freqNum):
+    def buildTree(self, wordFreq, freqNum, device):
         heap = []
         nodeList = []
         
         for i in range(len(wordFreq)):
-            node = treeNode(name=wordFreq[i])
+            node = treeNode(name=wordFreq[i], device=device)
             node.isNode = False
             nodeList.append((freqNum[i], wordFreq[i], node))
         for node in nodeList:
@@ -135,8 +135,8 @@ class skipGram(nn.Module):
             heapq.heappush(
                 heap,
                 (
-                    weight, str(hash(treeNode())),
-                    treeNode(node1[2], node2[2])
+                    weight, str(hash(treeNode(device=device))),
+                    treeNode(node1[2], node2[2], device=device)
                 )
             )
             
@@ -157,7 +157,7 @@ class skipGram(nn.Module):
         # skip-gram: get embedding vector
         x = self.embeddingSpace(x)
         
-        # heirarchical-softmax: count P
+        # heirarchical-softmax: count Pr
         output = torch.tensor(1, device=device)
         path = self.path[targetName]
         for (node, direct) in path:
@@ -189,11 +189,13 @@ class Classification(nn.Module):
         return x
 
 if __name__ == '__main__':
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cpu')
     timeStart = time.time()
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', default='cora', help='now just support "cora" dataset. (random walk)') 
     parser.add_argument('--walk_length', type=int, default=10, help="length of random walk. (random walk)") 
+    parser.add_argument('--word2vec_model', default='self-build', help='Use self-build word2vec model or gensim word2vec model. (word2vec)') 
     parser.add_argument('--node_time', type=int, default=5, help="walks per node. (word2vec)")
     parser.add_argument('--embedding_vector_size', type=int, default=128, help='Dimensionality of the word vectors. (word2vec)')
     parser.add_argument('--window_size', type=int, default=2, help='Maximum distance between the current and predicted word within a sentence. (word2vec)')
@@ -218,73 +220,73 @@ if __name__ == '__main__':
     walkTime = time.time()
     print('>>> randomWalk: generate random walk success! ({:.2f}s)'.format(walkTime - dataTime))
     
-    # model = Word2Vec(
-    #     sentences=walks,
-    #     vector_size=args.embedding_vector_size,
-    #     window=args.window_size,
-    #     min_count=args.mini_count,
-    #     workers=args.workers,
-    #     sg=1, hs=1,
-    #     alpha=args.learning_rate,
-    #     min_alpha=args.min_learning_rate,
-    #     epochs=args.word2vec_epochs    
-    # )    
-    # for word in data:
-    #     data[word].embeddingVector = torch.tensor(model.wv[word], device=device)
-    skipgram = skipGram(nodeFreq, freqNum, len(data), args.embedding_vector_size)
-    skipgram = skipgram.to(device)
-    lossFunc = LossFunc()
-    lossFunc = lossFunc.to(device)
-    optimizer = torch.optim.SGD(skipgram.parameters(), lr=args.learning_rate)
-    for epoch in range(args.word2vec_epochs):
-        skipgram.train()
-        for walk in tqdm(walks):
-            for i, word in enumerate(walk):
-                input = data[word].onehot
-                neighbors = walk[
-                    i - args.window_size if i - args.window_size > 0 else 0: i
-                    ] + walk[i: i + args.window_size]
-                for neighborWord in neighbors:
-                    optimizer.zero_grad()
-                    output = skipgram(input, neighborWord, device)
-                    loss = lossFunc(output)
-                    loss.backward()
-                    optimizer.step()
-    for word in data:
-        data[word].embeddingVector = skipgram.getEmbeddingVector(data[word].onehot)
+    if (args.word2vec_model == 'self-build'):
+        skipgram = skipGram(nodeFreq, freqNum, len(data), args.embedding_vector_size, device)
+        skipgram = skipgram.to(device)
+        word2vecLossFunc = LossFunc()
+        word2vecLossFunc = word2vecLossFunc.to(device)
+        word2vecOptimizer = torch.optim.SGD(skipgram.parameters(), lr=args.learning_rate)
+
+        for epoch in range(args.word2vec_epochs):
+            skipgram.train()
+            for walk in tqdm(walks, 'word2vec epoch ' + str(epoch)):
+                for i, word in enumerate(walk):
+                    input = data[word].onehot
+                    neighbors = walk[
+                        i - args.window_size if i - args.window_size > 0 else 0: i
+                        ] + walk[i: i + args.window_size]
+                    for neighborWord in neighbors:
+                        word2vecOptimizer.zero_grad()
+                        output = skipgram(input, neighborWord, device)
+                        loss = word2vecLossFunc(output)
+                        loss.backward()
+                        word2vecOptimizer.step()
+        for word in data:
+            data[word].embeddingVector = skipgram.getEmbeddingVector(data[word].onehot)
+    else:  
+        model = Word2Vec(
+            sentences=walks,
+            vector_size=args.embedding_vector_size,
+            window=args.window_size,
+            min_count=args.mini_count,
+            workers=args.workers,
+            sg=1, hs=1,
+            alpha=args.learning_rate,
+            min_alpha=args.min_learning_rate,
+            epochs=args.word2vec_epochs    
+        )    
+        for word in data:
+            data[word].embeddingVector = torch.tensor(model.wv[word], device=device)  
     word2vecTime = time.time()
     print('>>> word2vec: embedding vector trained success! ({:.2f}s)'.format(word2vecTime - walkTime))
     
     classification = Classification(args.embedding_vector_size, len(label))
     classification.to(device)
-    lossFunc = nn.CrossEntropyLoss()
-    lossFunc.to(device)
-    optimizer = torch.optim.Adam(classification.parameters(), lr=1e-2)
+    classifiLossFunc = nn.CrossEntropyLoss()
+    classifiLossFunc.to(device)
+    classifiOptimizer = torch.optim.Adam(classification.parameters(), lr=1e-2)
     
-    # 划分训练集和验证集
     train = data.copy()
     validate = []
     for _ in range(int(len(data) * args.validation_num)):
         key = random.sample(train.keys(), 1)[0]
         validate.append(key)
         del train[key]
-    # 训练
     classifiStartTime = time.time()
     lastValiLoss = 0.0
-    for epoch in range(args.classifi_epochs):
+    for epoch in tqdm(range(args.classifi_epochs), desc="classification: "):
         curLoss = 0.0
         classification.train()
         for word in train:
             input = data[word].embeddingVector
             target = data[word].labelOnehot
             output = classification(input)
-            optimizer.zero_grad()
-            loss = lossFunc(output, target)
-            loss.backward()
-            optimizer.step()
+            classifiOptimizer.zero_grad()
+            loss = classifiLossFunc(output, target)
+            loss.backward(retain_graph=True)
+            classifiOptimizer.step()
             curLoss += loss
         
-        # 每隔30轮训练，进行一次测试
         if (epoch % 30 == 0):
             classification.eval()
             cur = 0
@@ -295,7 +297,7 @@ if __name__ == '__main__':
                     target = data[word].labelOnehot
                     tar = data[word].label
                     output = classification(input)
-                    loss = lossFunc(output, target)
+                    loss = classifiLossFunc(output, target)
                     if (output.argmax() == tar):
                         cur += 1
                     valiLoss += loss
@@ -307,14 +309,12 @@ if __name__ == '__main__':
                     break
                 lastValiLoss = valiLoss
             acc = cur / len(validate)
-            classifiEndTime = time.time()
-            print('>>> classification validation: epoch {}, acc={:.3f}. ({:.2f}s)'.format(epoch, acc, classifiEndTime - classifiStartTime))
-        classifiEndTime = time.time()
-        print('>>> classification train: epoch {}, loss={:.5f}. ({:.2f}s)'.format(epoch, curLoss / len(train), classifiEndTime - classifiStartTime))
-        classifiStartTime = classifiEndTime
+    classifiEndTime = time.time()
+    print('>>> classification train: classification model trained success! loss={:.5f}. ({:.2f}s)'.format(curLoss / len(train), classifiEndTime - classifiStartTime))
     
     # 测试
     cur = 0
+    testStartTime = time.time()
     with torch.no_grad():
         for word in data:
             input = data[word].embeddingVector
@@ -323,19 +323,19 @@ if __name__ == '__main__':
             if (output.argmax() == target):
                 cur += 1
     acc = cur / len(data)
-    testTime = time.time()
-    print('>>> test: acc = {:.2f}. ({:.2f}s)'.format(acc, testTime - classifiEndTime))        
+    testEndTime = time.time()
+    print('>>> test: acc = {:.2f}. ({:.2f}s)'.format(acc, testEndTime - testStartTime))        
         
-    torch.save(classification, args.classification_save_path)
-    array = {}
-    for word in data:
-        dir = {}
-        dir['embeddingVector'] = data[word].embeddingVector
-        dir['label'] = data[word].label
-        array[word] = dir
-    array['label'] = label
-    np.save(args.embedding_save_path, array)
-    saveTime = time.time()
-    print('>>> save: embedding vector save at "{}", classification model save at "{}". ({:.2f}s)'.format(
-        args.embedding_save_path, args.classification_save_path, saveTime - testTime
-    ))
+    # torch.save(classification, args.classification_save_path)
+    # array = {}
+    # for word in data:
+    #     dir = {}
+    #     dir['embeddingVector'] = data[word].embeddingVector
+    #     dir['label'] = data[word].label
+    #     array[word] = dir
+    # array['label'] = label
+    # np.save(args.embedding_save_path, array)
+    # saveTime = time.time()
+    # print('>>> save: embedding vector save at "{}", classification model save at "{}". ({:.2f}s)'.format(
+    #     args.embedding_save_path, args.classification_save_path, saveTime - testTime
+    # ))

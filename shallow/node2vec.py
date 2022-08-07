@@ -4,17 +4,21 @@ import argparse
 import time
 import torch.nn as nn
 import torch
+from torch.utils.tensorboard import SummaryWriter
 import numpy as np
+from tqdm import tqdm
 
 class Node():
     
-    def __init__(self, name, features=None, label=None) -> None:
+    def __init__(self, name, features=None, label=None, id=0) -> None:
         self.name = name
         self.neighbors = []
         self.features = features
         self.label = label
         self.embeddingVector = None
+        self.labelOnehot = None
         self.onehot = None
+        self.id = id
         
 def coraUtilities(device):
     nodeFile = open('Datasets/cora/cora.content')
@@ -29,7 +33,7 @@ def coraUtilities(device):
         if (line[-1] not in label):
             label[line[-1]] = cnt
             cnt += 1
-        node = Node(line[0], features=line[1: -2], label=label[line[-1]])
+        node = Node(line[0], features=line[1: -2], label=label[line[-1]], id=len(nodeIndex))
         nodeIndex[node.name] = node
         
     # build edge
@@ -44,7 +48,12 @@ def coraUtilities(device):
         labelVector = torch.zeros(len(label), 
             dtype=torch.float32, device=device)
         labelVector[nodeIndex[word].label] = 1
-        nodeIndex[word].onehot = labelVector
+        nodeIndex[word].labelOnehot = labelVector
+        
+    for i, word in enumerate(nodeIndex):
+        onehot = torch.zeros(len(nodeIndex), device=device)
+        onehot[i] = 1
+        nodeIndex[word].onehot = onehot
     
     return nodeIndex, label
 
@@ -134,6 +143,33 @@ def getRandomIndex(accept, alias):
                 return boxIndex - 1
             else:
                 return alias[boxIndex] - 1
+            
+class skipGram(nn.Module):
+    
+    def __init__(self, nodeNum, embeddingSize) -> None:
+        super().__init__()
+
+        self.embeddingSpace = nn.Linear(nodeNum, embeddingSize)
+        self.Wt = nn.Linear(embeddingSize, nodeNum)
+        
+    def getEmbeddingVector(self, x):
+        x = self.embeddingSpace(x)
+        return x
+    
+    def forward(self, x):
+        x = self.embeddingSpace(x)
+        output = self.Wt(x)
+        return output
+
+class LossFunc(nn.Module):
+    
+    def forward(self, x, positiveItem, negativeItem):
+        output = torch.sigmoid(x[positiveItem])
+        for item in negativeItem:
+            output = output * torch.sigmoid(torch.neg(x[item]))
+        output = torch.log(output)
+        output = torch.neg(output)
+        return output
 
 class Classification(nn.Module):
     
@@ -147,13 +183,16 @@ class Classification(nn.Module):
         return x
 
 if __name__ == '__main__':
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device('cpu')
+    writer = SummaryWriter('logs')
     timeStart = time.time()
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', default='cora', help='now just support "cora" dataset. (random walk)') 
     parser.add_argument('--walk_length', type=int, default=10, help="length of random walk. (random walk)") 
     parser.add_argument('--p', type=int, default=4, help="p score. (random walk)") 
     parser.add_argument('--q', type=int, default=1, help="q score. (random walk)") 
+    parser.add_argument('--word2vec_model', default='self-build', help='Use self-build word2vec model or gensim word2vec model. (word2vec)') 
     parser.add_argument('--node_time', type=int, default=5, help="walks per node. (word2vec)")
     parser.add_argument('--embedding_vector_size', type=int, default=128, help='Dimensionality of the word vectors. (word2vec)')
     parser.add_argument('--window_size', type=int, default=2, help='Maximum distance between the current and predicted word within a sentence. (word2vec)')
@@ -161,7 +200,7 @@ if __name__ == '__main__':
     parser.add_argument('--workers', type=int, default=4, help='Use these many worker threads to train the model. (word2vec)')
     parser.add_argument('--learning_rate', type=float, default=1e-2, help='The initial learning rate. (word2vec)')
     parser.add_argument('--min_learning_rate', type=float, default=1e-3, help='Learning rate will linearly drop to "learning_rate" as training progresses. (word2vec)')
-    parser.add_argument('--word2vec_epochs', type=int, default=100, help='Number of epochs over the corpus. (word2vec)')
+    parser.add_argument('--word2vec_epochs', type=int, default=1, help='Number of epochs over the corpus. (word2vec)')
     parser.add_argument('--negative_samples', type=int, default=10, help='How many "noise words" should be drawn. (word2vec)')
     parser.add_argument('--classifi_epochs', type=int, default=100, help='Number of epochs over the corpus. (classification)')
     parser.add_argument('--validation_num', type=float, default=0.2, help='Ratio of validation set. (classification)')
@@ -179,53 +218,84 @@ if __name__ == '__main__':
     walkTime = time.time()
     print('>>> randomWalk: generate random walk success! ({:.2f}s)'.format(walkTime - dataTime))
     
-    model = Word2Vec(
-        sentences=walks,
-        vector_size=args.embedding_vector_size,
-        window=args.window_size,
-        min_count=args.mini_count,
-        workers=args.workers,
-        sg=1, hs=0,
-        negative=args.negative_samples,
-        alpha=args.learning_rate,
-        min_alpha=args.min_learning_rate,
-        epochs=args.word2vec_epochs    
-    )    
-    for word in data:
-        data[word].embeddingVector = torch.tensor(model.wv[word], device=device)
+    if (args.word2vec_model == 'self-build'):
+        skipgram = skipGram(len(data), args.embedding_vector_size)
+        skipgram = skipgram.to(device)
+        word2vecLossFunc = LossFunc()
+        word2vecLossFunc = word2vecLossFunc.to(device)
+        word2vecOptimizer = torch.optim.SGD(skipgram.parameters(), lr=args.learning_rate)
+
+        # cnt = 0
+        for epoch in range(args.word2vec_epochs):
+            curLoss = 0.0
+            skipgram.train()
+            for walk in tqdm(walks, 'word2vec epoch ' + str(epoch)):
+                for i, word in enumerate(walk):
+                    input = data[word].onehot
+                    neighbors = walk[
+                        i - args.window_size if i - args.window_size > 0 else 0: i
+                        ] + walk[i: i + args.window_size]
+                    for neighborWord in neighbors:
+                        negetiveList = [
+                            random.randint(0, len(data) - 1)
+                            for _ in range(args.negative_samples)
+                        ]
+                        word2vecOptimizer.zero_grad()
+                        output = skipgram(input)
+                        loss = word2vecLossFunc(output, data[neighborWord].id, negetiveList)
+                        loss.backward()
+                        word2vecOptimizer.step()
+            #             curLoss += loss
+            #             cnt += 1
+            # writer.add_scalar('word2vec train', curLoss / cnt, epoch)
+        for word in data:
+            data[word].embeddingVector = skipgram.getEmbeddingVector(data[word].onehot)
+    else:  
+        model = Word2Vec(
+            sentences=walks,
+            vector_size=args.embedding_vector_size,
+            window=args.window_size,
+            min_count=args.mini_count,
+            workers=args.workers,
+            sg=1, hs=0,
+            negative=args.negative_samples,
+            alpha=args.learning_rate,
+            min_alpha=args.min_learning_rate,
+            epochs=args.word2vec_epochs    
+        )    
+        for word in data:
+            data[word].embeddingVector = torch.tensor(model.wv[word], device=device)
     word2vecTime = time.time()
     print('>>> word2vec: embedding vector trained success! ({:.2f}s)'.format(word2vecTime - walkTime))
     
     classification = Classification(args.embedding_vector_size, len(label))
     classification.to(device)
-    lossFunc = nn.CrossEntropyLoss()
-    lossFunc.to(device)
-    optimizer = torch.optim.Adam(classification.parameters(), lr=1e-2)
+    classifiLossFunc = nn.CrossEntropyLoss()
+    classifiLossFunc.to(device)
+    classifiOptimizer = torch.optim.Adam(classification.parameters(), lr=1e-2)
     
-    # 划分训练集和验证集
     train = data.copy()
     validate = []
     for _ in range(int(len(data) * args.validation_num)):
         key = random.sample(train.keys(), 1)[0]
         validate.append(key)
         del train[key]
-    # 训练
     classifiStartTime = time.time()
     lastValiLoss = 0.0
-    for epoch in range(args.classifi_epochs):
+    for epoch in tqdm(range(args.classifi_epochs), desc="classification: "):
         curLoss = 0.0
         classification.train()
         for word in train:
             input = data[word].embeddingVector
-            target = data[word].onehot
+            target = data[word].labelOnehot
             output = classification(input)
-            optimizer.zero_grad()
-            loss = lossFunc(output, target)
-            loss.backward()
-            optimizer.step()
+            classifiOptimizer.zero_grad()
+            loss = classifiLossFunc(output, target)
+            loss.backward(retain_graph=True)
+            classifiOptimizer.step()
             curLoss += loss
+        # writer.add_scalar('classification train', curLoss / len(train), epoch)
         
-        # 每隔30轮训练，进行一次测试
         if (epoch % 30 == 0):
             classification.eval()
             cur = 0
@@ -233,10 +303,10 @@ if __name__ == '__main__':
                 valiLoss = 0.0
                 for word in validate:
                     input = data[word].embeddingVector
-                    target = data[word].onehot
+                    target = data[word].labelOnehot
                     tar = data[word].label
                     output = classification(input)
-                    loss = lossFunc(output, target)
+                    loss = classifiLossFunc(output, target)
                     if (output.argmax() == tar):
                         cur += 1
                     valiLoss += loss
@@ -248,14 +318,13 @@ if __name__ == '__main__':
                     break
                 lastValiLoss = valiLoss
             acc = cur / len(validate)
-            classifiEndTime = time.time()
-            print('>>> classification validation: epoch {}, acc={:.3f}. ({:.2f}s)'.format(epoch, acc, classifiEndTime - classifiStartTime))
-        classifiEndTime = time.time()
-        print('>>> classification train: epoch {}, loss={:.5f}. ({:.2f}s)'.format(epoch, curLoss / len(train), classifiEndTime - classifiStartTime))
-        classifiStartTime = classifiEndTime
+            # writer.add_scalar('classification validation', acc, epoch / 30)
+    classifiEndTime = time.time()
+    print('>>> classification train: classification model trained success! loss={:.5f}. ({:.2f}s)'.format(curLoss / len(train), classifiEndTime - classifiStartTime))
     
     # 测试
     cur = 0
+    testStartTime = time.time()
     with torch.no_grad():
         for word in data:
             input = data[word].embeddingVector
@@ -264,19 +333,19 @@ if __name__ == '__main__':
             if (output.argmax() == target):
                 cur += 1
     acc = cur / len(data)
-    testTime = time.time()
-    print('>>> test: acc = {:.2f}. ({:.2f}s)'.format(acc, testTime - classifiEndTime))        
+    testEndTime = time.time()
+    print('>>> test: acc = {:.2f}. ({:.2f}s)'.format(acc, testEndTime - testStartTime))        
         
-    torch.save(classification, args.classification_save_path)
-    array = {}
-    for word in data:
-        dir = {}
-        dir['embeddingVector'] = data[word].embeddingVector
-        dir['label'] = data[word].label
-        array[word] = dir
-    array['label'] = label
-    np.save(args.embedding_save_path, array)
-    saveTime = time.time()
-    print('>>> save: embedding vector save at "{}", classification model save at "{}". ({:.2f}s)'.format(
-        args.embedding_save_path, args.classification_save_path, saveTime - testTime
-    ))
+    # torch.save(classification, args.classification_save_path)
+    # array = {}
+    # for word in data:
+    #     dir = {}
+    #     dir['embeddingVector'] = data[word].embeddingVector
+    #     dir['label'] = data[word].label
+    #     array[word] = dir
+    # array['label'] = label
+    # np.save(args.embedding_save_path, array)
+    # saveTime = time.time()
+    # print('>>> save: embedding vector save at "{}", classification model save at "{}". ({:.2f}s)'.format(
+    #     args.embedding_save_path, args.classification_save_path, saveTime - testTime
+    # ))
