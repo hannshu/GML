@@ -3,6 +3,7 @@ import time
 import torch.nn as nn
 import torch
 from tqdm import tqdm
+from sklearn.decomposition import PCA
         
 def coraUtilities(device):
     nodeFile = open('Datasets/cora/cora.content')
@@ -22,9 +23,8 @@ def coraUtilities(device):
             label[line[-1]] = cnt
             cnt += 1
         labelMatrix[i][label[line[-1]]] = 1
-        features = line[1: -2]
-        for j in range(len(features)):
-            X[i][j] = int(features[j])
+        features = list(map(int, line[1: -1]))
+        X[i] = torch.Tensor(features, device=device)
         nodeIndex[line[0]] = i
         i += 1
         
@@ -35,9 +35,9 @@ def coraUtilities(device):
         adj[nodeIndex[line[1]]][nodeIndex[line[0]]] = 1
 
     adj += torch.eye(len(adj))
-    # d = adj.sum(1)
-    # d = torch.diag(torch.pow(d , -0.5))
-    # adj = d.mm(adj).mm(d)
+    d = adj.sum(1)
+    d = torch.diag(torch.pow(d , -0.5))
+    adj = d.mm(adj).mm(d)
     
     return adj, X, labelMatrix
 
@@ -63,8 +63,10 @@ if __name__ == '__main__':
     timeStart = time.time()
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset', default='cora', help='now just support "cora" dataset.') 
-    parser.add_argument('--learning_rate', type=float, default=1e-2, help="learning rate of GCN") 
+    parser.add_argument('--learning_rate', type=float, default=1, help="learning rate of GCN") 
     parser.add_argument('--epochs', type=int, default=100, help='training epoch') 
+    parser.add_argument('--pca', default='true', help='pre-process by pca') 
+    parser.add_argument('--components', type=int, default=1000, help='pca dimension') 
     args = parser.parse_args()
     
     if (args.dataset == 'cora'):
@@ -72,7 +74,13 @@ if __name__ == '__main__':
         dataTime = time.time()
         print('>>> cora: data init success! ({:.2f}s)'.format(dataTime - timeStart))
     
-    gcn = GCN(adj, len(X[0]), len(labelMatrix[0]))
+    if (args.pca == 'true'):
+        pca = PCA(n_components=args.components)
+        X = pca.fit_transform(X)
+        X = torch.Tensor(X, device=device)
+        gcn = GCN(adj, args.components, len(labelMatrix[0]))
+    else:
+        gcn = GCN(adj, len(X[0]), len(labelMatrix[0]))
     gcn = gcn.to(device)
     lossFunc = nn.CrossEntropyLoss()
     lossFunc = lossFunc.to(device)
@@ -81,9 +89,9 @@ if __name__ == '__main__':
     # train
     gcn.train()
     for epoch in tqdm(range(args.epochs), desc=">>> GCN train"):
-        optimizer.zero_grad()
         output = gcn(X)
         loss = lossFunc(output, labelMatrix)
+        optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
